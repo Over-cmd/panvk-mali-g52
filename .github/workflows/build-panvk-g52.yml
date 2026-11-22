@@ -1,0 +1,133 @@
+name: Build PanVK Mali-G52
+
+on:
+  push:
+    branches: ["maestro", "**"]
+  pull_request:
+    branches: ["maestro", "**"]
+  workflow_dispatch:
+
+env:
+  PANVK_RELEASE: "0.0.2-alpha-G52"
+  MESA_REF: "main"
+
+jobs:
+  build-panvk-g52:
+    name: Build PanVK G52
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork (panvk-mali-g52)
+        uses: actions/checkout@v4
+        with:
+          path: repo-patches
+
+      - name: Inspect repository contents & README
+        run: |
+          ls -la repo-patches
+          find repo-patches -maxdepth 3 -type f
+          cat repo-patches/LÉAME.md || true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install build dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+          NEEDRESTART_MODE: a
+        run: |
+          sudo DEBIAN_FRONTEND=noninteractive apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            -o Dpkg::Options::="--force-confdef" \
+            -o Dpkg::Options::="--force-confold" \
+            build-essential \
+            git \
+            curl \
+            llvm-20-dev \
+            libclang-20-dev \
+            libclc-20-dev \
+            libllvmspirvlib-20-dev \
+            libelf-dev \
+            spirv-tools \
+            bison \
+            flex \
+            libdrm-dev \
+            libx11-dev \
+            libx11-xcb-dev \
+            libxcb1-dev \
+            libxcb-randr0-dev \
+            libxcb-present-dev \
+            libxcb-dri3-dev \
+            libxcb-shm-dev \
+            libxshmfence-dev \
+            pkg-config \
+            gettext
+          python -m pip install --upgrade pip
+          pip install mako PyYAML meson ninja packaging
+
+      - name: Fetch Mesa source
+        run: |
+          mkdir -p mesa
+          curl -fSL --retry 5 --retry-delay 5 \
+            "https://gitlab.freedesktop.org/mesa/mesa/-/archive/${MESA_REF}/mesa-${MESA_REF}.tar.gz" \
+            | tar -xz --strip-components=1 -C mesa
+          git -C mesa init -q
+          git -C mesa config user.email "ci@local"
+          git -C mesa config user.name "CI"
+          git -C mesa add -A
+          git -C mesa commit -q -m "Base Mesa ${MESA_REF}"
+
+      - name: List available patches in fork
+        run: |
+          find repo-patches -type f \( -name "*.patch" -o -name "*.diff" -o -name "*.c" -o -name "*.h" \) | sort
+
+      - name: Build host tools
+        run: |
+          meson setup build-host mesa \
+            -Dbuildtype=release \
+            -Db_ndebug=true \
+            -Dplatforms=[] \
+            -Dgallium-drivers=[] \
+            -Dvulkan-drivers=[] \
+            -Dtools=panfrost \
+            -Dprecomp-compiler=enabled \
+            -Dinstall-precomp-compiler=true \
+            -Dllvm=enabled \
+            -Dmesa-clc=enabled \
+            -Dinstall-mesa-clc=true
+          ninja -C build-host \
+            src/compiler/clc/mesa_clc \
+            src/compiler/spirv/vtn_bindgen2 \
+            src/panfrost/clc/panfrost_compile
+          echo "$GITHUB_WORKSPACE/build-host/src/compiler/clc" >> $GITHUB_PATH
+          echo "$GITHUB_WORKSPACE/build-host/src/compiler/spirv" >> $GITHUB_PATH
+          echo "$GITHUB_WORKSPACE/build-host/src/panfrost/clc" >> $GITHUB_PATH
+
+      - name: Configure and build PanVK (native/X11 check)
+        run: |
+          meson setup build-x11 mesa \
+            -Dbuildtype=release \
+            -Dplatforms=x11 \
+            -Dvulkan-drivers=panfrost \
+            -Dgallium-drivers= \
+            -Dpanfrost-kmds=kbase \
+            -Dmesa-clc=system \
+            -Dprecomp-compiler=system \
+            -Dllvm=disabled
+          meson compile -C build-x11
+
+      - name: Package driver artifact
+        run: |
+          mkdir -p dist
+          find build-x11 -name "libvulkan_panfrost*.so*" -exec cp -v {} dist/ \;
+          ls -lh dist/
+          (cd dist && sha256sum * > SHA256SUMS.txt || true)
+          zip -j "PanVK-G52-${PANVK_RELEASE}.zip" dist/*
+
+      - name: Upload PanVK G52 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PanVK-Mali-G52-${{ env.PANVK_RELEASE }}
+          path: PanVK-G52-${{ env.PANVK_RELEASE }}.zip
+          if-no-files-found: warn
