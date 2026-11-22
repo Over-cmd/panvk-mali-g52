@@ -2,30 +2,28 @@ name: Build PanVK Mali-G52
 
 on:
   push:
-    branches: ["maestro", "**"]
+    branches: ["**"]
   pull_request:
-    branches: ["maestro", "**"]
+    branches: ["**"]
   workflow_dispatch:
 
 env:
+  # Versión del paquete; también se muestra como el nombre del controlador en DXVK HUD / MangoHud.
   PANVK_RELEASE: "0.0.2-alpha-G52"
   MESA_REF: "main"
 
 jobs:
-  build-panvk-g52:
-    name: Build PanVK G52
+  build-panvk-android:
+    name: Build PanVK G52 (${{ matrix.flavor }})
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        flavor: [adrenotools, x11]
     steps:
-      - name: Checkout fork (panvk-mali-g52)
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           path: repo-patches
-
-      - name: Inspect repository contents & README
-        run: |
-          ls -la repo-patches
-          find repo-patches -maxdepth 3 -type f
-          cat repo-patches/LÉAME.md || true
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -42,8 +40,7 @@ jobs:
             -o Dpkg::Options::="--force-confdef" \
             -o Dpkg::Options::="--force-confold" \
             build-essential \
-            git \
-            curl \
+            zip \
             llvm-20-dev \
             libclang-20-dev \
             libclc-20-dev \
@@ -53,38 +50,52 @@ jobs:
             bison \
             flex \
             libdrm-dev \
-            libx11-dev \
-            libx11-xcb-dev \
-            libxcb1-dev \
-            libxcb-randr0-dev \
-            libxcb-present-dev \
-            libxcb-dri3-dev \
-            libxcb-shm-dev \
-            libxshmfence-dev \
             pkg-config \
             gettext
           python -m pip install --upgrade pip
           pip install mako PyYAML meson ninja packaging
 
-      - name: Fetch Mesa source
+      - name: Fetch Mesa
         run: |
-          mkdir -p mesa
+          mkdir -p work/mesa
           curl -fSL --retry 5 --retry-delay 5 \
             "https://gitlab.freedesktop.org/mesa/mesa/-/archive/${MESA_REF}/mesa-${MESA_REF}.tar.gz" \
-            | tar -xz --strip-components=1 -C mesa
-          git -C mesa init -q
-          git -C mesa config user.email "ci@local"
-          git -C mesa config user.name "CI"
-          git -C mesa add -A
-          git -C mesa commit -q -m "Base Mesa ${MESA_REF}"
+            | tar -xz --strip-components=1 -C work/mesa
+          git -C work/mesa init -q
+          git -C work/mesa config user.email "ci@local"
+          git -C work/mesa config user.name "CI"
+          git -C work/mesa add -A
+          git -C work/mesa commit -q -m "Mesa ${MESA_REF}"
 
-      - name: List available patches in fork
+      - name: Apply PanVK G52 patches
         run: |
-          find repo-patches -type f \( -name "*.patch" -o -name "*.diff" -o -name "*.c" -o -name "*.h" \) | sort
+          echo "Archivos encontrados en repo-patches:"
+          find repo-patches -maxdepth 4 -type f | sort
+          while IFS= read -r p; do
+            echo "Intentando aplicar parche: $p"
+            if git -C work/mesa apply --check "$GITHUB_WORKSPACE/$p" 2>/dev/null; then
+              git -C work/mesa apply "$GITHUB_WORKSPACE/$p"
+              echo "APLICADO: $p"
+            elif git -C work/mesa apply --3way "$GITHUB_WORKSPACE/$p" 2>/dev/null; then
+              echo "APLICADO (3way): $p"
+            else
+              echo "OMITIDO (no aplica a esta base de Mesa): $p"
+            fi
+          done < <(find repo-patches -type f \( -name "*.patch" -o -name "*.diff" \) | sort)
+
+      - name: Stamp driver version
+        # driverInfo (DXVK HUD, MangoHud, vulkaninfo) muestra esta versión.
+        run: |
+          f=$(find work/mesa/src/panfrost/vulkan -name "*physical_device*.c" | head -n1)
+          echo "Archivo physical_device detectado: $f"
+          if [ -n "$f" ]; then
+            sed -i "s/^#define PANVK_KBASE_RELEASE \".*\"/#define PANVK_KBASE_RELEASE \"${PANVK_RELEASE}\"/" "$f" || true
+            sed -i 's/"PanVK-kbase " PANVK_KBASE_RELEASE/"PanVK G52 " PANVK_KBASE_RELEASE/' "$f" || true
+          fi
 
       - name: Build host tools
         run: |
-          meson setup build-host mesa \
+          meson setup build-host work/mesa \
             -Dbuildtype=release \
             -Db_ndebug=true \
             -Dplatforms=[] \
@@ -100,34 +111,124 @@ jobs:
             src/compiler/clc/mesa_clc \
             src/compiler/spirv/vtn_bindgen2 \
             src/panfrost/clc/panfrost_compile
+          ln -sf "$GITHUB_WORKSPACE/build-host/src/compiler/clc/mesa_clc" "$GITHUB_WORKSPACE/build-host/src/compiler/clc/mesa-clc"
+          ln -sf "$GITHUB_WORKSPACE/build-host/src/compiler/spirv/vtn_bindgen2" "$GITHUB_WORKSPACE/build-host/src/compiler/spirv/vtn-bindgen2"
           echo "$GITHUB_WORKSPACE/build-host/src/compiler/clc" >> $GITHUB_PATH
           echo "$GITHUB_WORKSPACE/build-host/src/compiler/spirv" >> $GITHUB_PATH
           echo "$GITHUB_WORKSPACE/build-host/src/panfrost/clc" >> $GITHUB_PATH
 
-      - name: Configure and build PanVK (native/X11 check)
+      - name: Configure Meson for PanVK G52
         run: |
-          meson setup build-x11 mesa \
+          export ANDROID_NDK_HOME="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}"
+          export MESON_WORKING_DIR="$GITHUB_WORKSPACE"
+          TOOLCHAIN_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          CLANG_DIR="$(ls -d $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/lib/clang/*/lib/linux/aarch64 2>/dev/null | tail -n1)"
+          if [ -z "$CLANG_DIR" ]; then
+            CLANG_DIR="$(ls -d $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/lib64/clang/*/lib/linux/aarch64 2>/dev/null | tail -n1)"
+          fi
+          export CLANG_LIB_DIR="${CLANG_DIR:-$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/lib/clang/18/lib/linux/aarch64}"
+          echo "TOOLCHAIN_BIN=$TOOLCHAIN_BIN"
+          echo "CLANG_LIB_DIR=$CLANG_LIB_DIR"
+
+          cat <<EOF > android-cross.txt
+          [binaries]
+          c = '$TOOLCHAIN_BIN/aarch64-linux-android30-clang'
+          cpp = '$TOOLCHAIN_BIN/aarch64-linux-android30-clang++'
+          ar = '$TOOLCHAIN_BIN/llvm-ar'
+          strip = '$TOOLCHAIN_BIN/llvm-strip'
+          pkgconfig = 'pkg-config'
+
+          [built-in options]
+          c_args = ['-L$CLANG_LIB_DIR']
+          cpp_args = ['-L$CLANG_LIB_DIR']
+          c_link_args = ['-L$CLANG_LIB_DIR']
+          cpp_link_args = ['-L$CLANG_LIB_DIR']
+
+          [host_machine]
+          system = 'android'
+          cpu_family = 'aarch64'
+          cpu = 'armv8-a'
+          endian = 'little'
+          EOF
+          cat android-cross.txt
+
+          PLATFORMS="android"
+          if [ "${{ matrix.flavor }}" = "x11" ]; then
+            PLATFORMS="android,x11"
+          fi
+
+          meson setup build work/mesa \
+            --cross-file android-cross.txt \
             -Dbuildtype=release \
-            -Dplatforms=x11 \
-            -Dvulkan-drivers=panfrost \
+            -Dplatforms=$PLATFORMS \
+            -Dandroid-stub=true \
+            -Dandroid-strict=false \
+            -Dandroid-libbacktrace=disabled \
+            -Dplatform-sdk-version=30 \
+            -Dglx=disabled \
+            -Dgbm=disabled \
+            -Degl=disabled \
+            -Dopengl=false \
+            -Dgles1=disabled \
+            -Dgles2=disabled \
+            -Dglvnd=disabled \
+            -Dvalgrind=disabled \
             -Dgallium-drivers= \
-            -Dpanfrost-kmds=kbase \
+            -Dshared-glapi=disabled \
+            -Dzstd=disabled \
             -Dmesa-clc=system \
             -Dprecomp-compiler=system \
-            -Dllvm=disabled
-          meson compile -C build-x11
+            -Dvulkan-drivers=panfrost \
+            -Dllvm=disabled \
+            -Dpanfrost-kmds=kbase
 
-      - name: Package driver artifact
+      - name: Build PanVK driver
         run: |
-          mkdir -p dist
-          find build-x11 -name "libvulkan_panfrost*.so*" -exec cp -v {} dist/ \;
-          ls -lh dist/
-          (cd dist && sha256sum * > SHA256SUMS.txt || true)
-          zip -j "PanVK-G52-${PANVK_RELEASE}.zip" dist/*
+          meson compile -C build
 
-      - name: Upload PanVK G52 artifact
+      - name: Package driver
+        run: |
+          mkdir -p pkg-tmp
+          SO_PATH=$(find build -name "libvulkan_panfrost.so" | head -n1)
+          echo "Binario encontrado: $SO_PATH"
+          cp "$SO_PATH" pkg-tmp/libvulkan_panfrost.so
+          cat <<EOF > "pkg-tmp/meta.json"
+          {
+            "schemaVersion": 1,
+            "name": "PanVK Mali-G52 (${{ matrix.flavor }})",
+            "description": "PanVK kbase/JM driver for Mali-G52 (${{ matrix.flavor }})",
+            "author": "PanVK / LukeValen / Over-cmd",
+            "packageVersion": "${PANVK_RELEASE}",
+            "vendor": "PanVK G52",
+            "driverVersion": "${PANVK_RELEASE}",
+            "minApi": 30,
+            "libraryName": "libvulkan_panfrost.so"
+          }
+          EOF
+          ZIP_NAME="PanVK-G52-${PANVK_RELEASE}-${{ matrix.flavor }}.zip"
+          MANIFEST_NAME="PanVK-G52-${PANVK_RELEASE}-${{ matrix.flavor }}-MANIFEST.txt"
+          (cd pkg-tmp && zip -r "../${ZIP_NAME}" .)
+          sha256sum "${ZIP_NAME}" > SHA256SUMS.txt
+          {
+            echo "Driver: PanVK Mali-G52"
+            echo "Version: ${PANVK_RELEASE}"
+            echo "Flavor: ${{ matrix.flavor }}"
+            echo "Binary: ${SO_PATH}"
+          } > "${MANIFEST_NAME}"
+
+      - name: Upload packaged ZIP driver
         uses: actions/upload-artifact@v4
         with:
-          name: PanVK-Mali-G52-${{ env.PANVK_RELEASE }}
-          path: PanVK-G52-${{ env.PANVK_RELEASE }}.zip
-          if-no-files-found: warn
+          name: PanVK-G52-${{ matrix.flavor }}-release
+          path: |
+            PanVK-G52-${{ env.PANVK_RELEASE }}-${{ matrix.flavor }}.zip
+            PanVK-G52-${{ env.PANVK_RELEASE }}-${{ matrix.flavor }}-MANIFEST.txt
+            SHA256SUMS.txt
+          if-no-files-found: error
+
+      - name: Upload raw driver binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: libvulkan_panfrost-g52-aarch64-${{ matrix.flavor }}
+          path: build/src/panfrost/vulkan/libvulkan_panfrost.so
+          if-no-files-found: error
