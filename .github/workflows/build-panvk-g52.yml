@@ -58,19 +58,26 @@ jobs:
             pkg-config \
             gettext
 
+          LLVM22_BINDIR="$(llvm-config-22 --bindir)"
           LLVM22_LIBDIR="$(llvm-config-22 --libdir)"
-          CLANG22_SO="$(find /usr/lib/llvm-22 -name 'libclang*.so*' | head -n1)"
-          echo "LLVM22_LIBDIR=$LLVM22_LIBDIR"
-          echo "CLANG22_SO=$CLANG22_SO"
-          echo "LIBCLANG_PATH=$LLVM22_LIBDIR" >> $GITHUB_ENV
-          if [ -n "$CLANG22_SO" ]; then
-            echo "CLANG_PATH=$CLANG22_SO" >> $GITHUB_ENV
-          fi
-          echo "LD_LIBRARY_PATH=$LLVM22_LIBDIR:${LD_LIBRARY_PATH:-}" >> $GITHUB_ENV
+          CLANG22_BIN="$LLVM22_BINDIR/clang"
+          [ -x "$CLANG22_BIN" ] || CLANG22_BIN="$(command -v clang-22 || true)"
+          CLANG22_RES_INC="$(find /usr/lib/llvm-22/lib/clang -maxdepth 3 -type d -name include | head -n1)"
 
+          echo "CLANG22_BIN=$CLANG22_BIN"
+          echo "CLANG22_RES_INC=$CLANG22_RES_INC"
+
+          if [ -n "$CLANG22_BIN" ] && [ -x "$CLANG22_BIN" ]; then
+            echo "CLANG_PATH=$CLANG22_BIN" >> $GITHUB_ENV
+            export CLANG_PATH="$CLANG22_BIN"
+          fi
+          echo "LIBCLANG_PATH=$LLVM22_LIBDIR" >> $GITHUB_ENV
           export LIBCLANG_PATH="$LLVM22_LIBDIR"
-          [ -n "$CLANG22_SO" ] && export CLANG_PATH="$CLANG22_SO"
-          export LD_LIBRARY_PATH="$LLVM22_LIBDIR:${LD_LIBRARY_PATH:-}"
+
+          if [ -n "$CLANG22_RES_INC" ]; then
+            echo "BINDGEN_EXTRA_CLANG_ARGS=-isystem $CLANG22_RES_INC" >> $GITHUB_ENV
+            export BINDGEN_EXTRA_CLANG_ARGS="-isystem $CLANG22_RES_INC"
+          fi
 
           cargo install --locked bindgen-cli
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
