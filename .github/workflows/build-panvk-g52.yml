@@ -10,7 +10,7 @@ on:
 env:
   # Versión del paquete; también se muestra como el nombre del controlador en DXVK HUD / MangoHud.
   PANVK_RELEASE: "0.0.2-alpha-G52"
-  MESA_REF: "main"
+  MESA_REF: "mesa-26.3.0"
 
 jobs:
   build-panvk-android:
@@ -142,8 +142,6 @@ jobs:
 
       - name: Build host tools
         run: |
-          export PATH="$HOME/.cargo/bin:$PATH"
-          which bindgen && bindgen --version
           meson setup build-host work/mesa \
             -Dbuildtype=release \
             -Db_ndebug=true \
@@ -185,7 +183,7 @@ jobs:
           cpp = '$TOOLCHAIN_BIN/aarch64-linux-android30-clang++'
           ar = '$TOOLCHAIN_BIN/llvm-ar'
           strip = '$TOOLCHAIN_BIN/llvm-strip'
-          pkgconfig = 'pkg-config'
+          pkg-config = 'pkg-config'
 
           [built-in options]
           c_args = ['-L$CLANG_LIB_DIR']
@@ -206,6 +204,11 @@ jobs:
             PLATFORMS="android,x11"
           fi
 
+          EXTRA_KMDS_ARGS=()
+          if grep -q "panfrost-kmds" work/mesa/meson.options 2>/dev/null; then
+            EXTRA_KMDS_ARGS=(-Dpanfrost-kmds=kbase)
+          fi
+
           meson setup build work/mesa \
             --cross-file android-cross.txt \
             -Dbuildtype=release \
@@ -223,13 +226,12 @@ jobs:
             -Dglvnd=disabled \
             -Dvalgrind=disabled \
             -Dgallium-drivers= \
-            -Dshared-glapi=disabled \
             -Dzstd=disabled \
             -Dmesa-clc=system \
             -Dprecomp-compiler=system \
             -Dvulkan-drivers=panfrost \
             -Dllvm=disabled \
-            -Dpanfrost-kmds=kbase
+            "${EXTRA_KMDS_ARGS[@]}"
 
       - name: Build PanVK driver
         run: |
