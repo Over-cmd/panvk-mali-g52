@@ -57,9 +57,21 @@ jobs:
             libdrm-dev \
             pkg-config \
             gettext
-          LLVM22_LIB="$(llvm-config-22 --libdir)"
-          echo "LIBCLANG_PATH=$LLVM22_LIB" >> $GITHUB_ENV
-          export LIBCLANG_PATH="$LLVM22_LIB"
+
+          LLVM22_LIBDIR="$(llvm-config-22 --libdir)"
+          CLANG22_SO="$(find /usr/lib/llvm-22 -name 'libclang*.so*' | head -n1)"
+          echo "LLVM22_LIBDIR=$LLVM22_LIBDIR"
+          echo "CLANG22_SO=$CLANG22_SO"
+          echo "LIBCLANG_PATH=$LLVM22_LIBDIR" >> $GITHUB_ENV
+          if [ -n "$CLANG22_SO" ]; then
+            echo "CLANG_PATH=$CLANG22_SO" >> $GITHUB_ENV
+          fi
+          echo "LD_LIBRARY_PATH=$LLVM22_LIBDIR:${LD_LIBRARY_PATH:-}" >> $GITHUB_ENV
+
+          export LIBCLANG_PATH="$LLVM22_LIBDIR"
+          [ -n "$CLANG22_SO" ] && export CLANG_PATH="$CLANG22_SO"
+          export LD_LIBRARY_PATH="$LLVM22_LIBDIR:${LD_LIBRARY_PATH:-}"
+
           cargo install --locked bindgen-cli
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           python -m pip install --upgrade pip
