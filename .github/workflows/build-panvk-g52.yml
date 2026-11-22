@@ -36,7 +36,7 @@ jobs:
           path: |
             ~/.cargo
             /usr/local
-          key: panvk-g52-llvm21-spirv-${{ runner.os }}-v1
+          key: panvk-g52-llvm21-spirv-${{ runner.os }}-v2
 
       - name: Install build dependencies
         env:
@@ -99,7 +99,8 @@ jobs:
             git clone --depth 1 https://github.com/KhronosGroup/SPIRV-Headers.git /tmp/spirv-headers
             cmake -S /tmp/spirv-headers -B /tmp/spirv-headers/build -G Ninja \
               -DCMAKE_BUILD_TYPE=Release \
-              -DCMAKE_INSTALL_PREFIX=/usr/local
+              -DCMAKE_INSTALL_PREFIX=/usr/local \
+              -DSPIRV_HEADERS_ENABLE_TESTS=OFF
             sudo ninja -C /tmp/spirv-headers/build install
 
             git clone --depth 1 https://github.com/KhronosGroup/SPIRV-Tools.git /tmp/spirv-tools
@@ -110,8 +111,14 @@ jobs:
               -DSPIRV_SKIP_TESTS=ON \
               -DSPIRV_WERROR=OFF \
               -DSPIRV_BUILD_FUZZER=OFF \
-              -DSPIRV_BUILD_DIFF=OFF
-            sudo ninja -C /tmp/spirv-tools/build install
+              -DSPIRV_BUILD_DIFF=OFF \
+              -DSPIRV_BUILD_REDUCE=OFF
+            ninja -C /tmp/spirv-tools/build -j 2 \
+              SPIRV-Tools \
+              SPIRV-Tools-opt \
+              SPIRV-Tools-link \
+              spirv-link
+            sudo cmake --install /tmp/spirv-tools/build
           fi
           sudo ldconfig
 
