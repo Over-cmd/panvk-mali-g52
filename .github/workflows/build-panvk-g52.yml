@@ -44,6 +44,8 @@ jobs:
             cmake \
             ninja-build \
             zip \
+            cargo \
+            rustc \
             llvm-22-dev \
             libclang-22-dev \
             libclc-22-dev \
@@ -55,7 +57,10 @@ jobs:
             libdrm-dev \
             pkg-config \
             gettext
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y bindgen || cargo install bindgen-cli
+          LLVM22_LIB="$(llvm-config-22 --libdir)"
+          echo "LIBCLANG_PATH=$LLVM22_LIB" >> $GITHUB_ENV
+          export LIBCLANG_PATH="$LLVM22_LIB"
+          cargo install --locked bindgen-cli
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           python -m pip install --upgrade pip
           pip install mako PyYAML meson ninja packaging
@@ -118,6 +123,8 @@ jobs:
 
       - name: Build host tools
         run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          which bindgen && bindgen --version
           meson setup build-host work/mesa \
             -Dbuildtype=release \
             -Db_ndebug=true \
